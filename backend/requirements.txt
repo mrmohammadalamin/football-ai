@@ -1,0 +1,9 @@
+google-adk
+google-cloud-aiplatform
+fastapi
+uvicorn
+python-dotenv
+pydantic
+google-cloud-texttospeech
+sqlalchemy
+pg8000
