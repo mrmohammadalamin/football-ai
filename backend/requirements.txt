@@ -1,9 +1,8 @@
-google-adk
 google-cloud-aiplatform
 fastapi
 uvicorn
 python-dotenv
 pydantic
-google-cloud-texttospeech
+gTTS
 sqlalchemy
 pg8000

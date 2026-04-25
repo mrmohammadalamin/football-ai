@@ -1,11 +1,12 @@
 import os
 import json
 import base64
+import io
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import vertexai
-from google.cloud import texttospeech
+from gtts import gTTS
 import sqlalchemy
 
 # Load environment variables
@@ -41,10 +42,21 @@ db_pool = init_connection_pool()
 
 from agent import orchestrator_agent
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(title="Football AI Agent API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class VideoContextRequest(BaseModel):
     video_description: str 
+    custom_query: str = None
 
 class InsightResponse(BaseModel):
     vision_analysis: str
@@ -56,24 +68,16 @@ class InsightResponse(BaseModel):
     audio_base64: str
 
 def generate_tts(text: str) -> str:
-    """Generates base64 encoded audio from text using Google Cloud TTS."""
+    """Generates base64 encoded audio from text using gTTS."""
     try:
-        client = texttospeech.TextToSpeechClient()
-        synthesis_input = texttospeech.SynthesisInput(text=text)
-        voice = texttospeech.VoiceSelectionParams(
-            language_code="en-US",
-            name="en-US-Journey-D", # A nice dynamic voice
-        )
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3
-        )
-        response = client.synthesize_speech(
-            input=synthesis_input, voice=voice, audio_config=audio_config
-        )
-        return base64.b64encode(response.audio_content).decode("utf-8")
+        tts = gTTS(text, lang='en')
+        fp = io.BytesIO()
+        tts.write_to_fp(fp)
+        fp.seek(0)
+        return base64.b64encode(fp.read()).decode("utf-8")
     except Exception as e:
         print(f"TTS generation failed: {e}")
-        # Return empty base64 string on failure (e.g. missing credentials)
+        # Return empty base64 string on failure
         return ""
 
 @app.post("/analyze", response_model=InsightResponse)
@@ -83,6 +87,8 @@ async def analyze_video(request: VideoContextRequest):
     """
     try:
         prompt = f"Analyze the following video segment: {request.video_description}"
+        if request.custom_query:
+            prompt += f"\nUser Custom Question: {request.custom_query}"
         
         # Invoke the Orchestrator
         response_text = orchestrator_agent.invoke(prompt)
@@ -111,12 +117,39 @@ async def analyze_video(request: VideoContextRequest):
         # Generate Audio from Commentary
         audio_b64 = generate_tts(data.get("commentary_text", ""))
         
-        # Optionally, save to AlloyDB here
-        # if db_pool:
-        #     with db_pool.connect() as conn:
-        #         # Insert into insights table
-        #         pass
-
+        # Save to AlloyDB
+        if db_pool:
+            try:
+                with db_pool.connect() as conn:
+                    # Create table if it doesn't exist
+                    conn.execute(sqlalchemy.text("""
+                        CREATE TABLE IF NOT EXISTS insights (
+                            id SERIAL PRIMARY KEY,
+                            vision_analysis TEXT,
+                            referee_decision TEXT,
+                            commentary_text TEXT,
+                            excitement_level INTEGER,
+                            fan_insight TEXT,
+                            video_generation_prompt TEXT
+                        )
+                    """))
+                    conn.commit()
+                    
+                    # Insert the new insight
+                    conn.execute(sqlalchemy.text("""
+                        INSERT INTO insights (vision_analysis, referee_decision, commentary_text, excitement_level, fan_insight, video_generation_prompt)
+                        VALUES (:vision, :referee, :commentary, :excitement, :fan, :prompt)
+                    """), {
+                        "vision": data.get("vision_analysis", ""),
+                        "referee": data.get("referee_decision", ""),
+                        "commentary": data.get("commentary_text", ""),
+                        "excitement": data.get("excitement_level", 5),
+                        "fan": data.get("fan_insight", ""),
+                        "prompt": data.get("video_generation_prompt", "")
+                    })
+                    conn.commit()
+            except Exception as e:
+                print(f"Failed to write to AlloyDB: {e}")
         return InsightResponse(
             vision_analysis=data.get("vision_analysis", ""),
             referee_decision=data.get("referee_decision", ""),
@@ -132,4 +165,5 @@ async def analyze_video(request: VideoContextRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)

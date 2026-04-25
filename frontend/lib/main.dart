@@ -1,11 +1,12 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
-import 'package:file_picker/file_picker.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'dart:io';
-import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 
 void main() {
   runApp(const FootballAIApp());
@@ -37,7 +38,9 @@ class FootballDashboard extends StatefulWidget {
 
 class _FootballDashboardState extends State<FootballDashboard> {
   VideoPlayerController? _controller;
-  final AudioPlayer _audioPlayer = AudioPlayer();
+  final FlutterTts _flutterTts = FlutterTts();
+  final TextEditingController _chatController = TextEditingController();
+  Timer? _pollingTimer;
   bool _isPlaying = false;
   bool _isAnalyzing = false;
   
@@ -48,15 +51,38 @@ class _FootballDashboardState extends State<FootballDashboard> {
   String _mediaText = "Waiting for analysis...";
   int _excitementLevel = 0;
 
+  @override
+  void initState() {
+    super.initState();
+    _flutterTts.setLanguage("en-US");
+    _flutterTts.setPitch(1.0);
+  }
+
+  void _startPolling() {
+    _pollingTimer?.cancel();
+    _pollingTimer = Timer.periodic(const Duration(seconds: 7), (timer) {
+      if (_isPlaying && !_isAnalyzing) {
+        _analyzeCurrentPlay();
+      }
+    });
+  }
+
+  void _stopPolling() {
+    _pollingTimer?.cancel();
+  }
+
   Future<void> _pickVideo() async {
-    FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.video);
-    if (result != null && result.files.single.path != null) {
+    final ImagePicker picker = ImagePicker();
+    final XFile? video = await picker.pickVideo(source: ImageSource.gallery);
+    
+    if (video != null) {
       _controller?.dispose();
-      _controller = VideoPlayerController.file(File(result.files.single.path!))
+      _controller = VideoPlayerController.networkUrl(Uri.parse(video.path))
         ..initialize().then((_) {
           setState(() {});
           _controller!.play();
           _isPlaying = true;
+          _startPolling();
         });
     }
   }
@@ -70,12 +96,19 @@ class _FootballDashboardState extends State<FootballDashboard> {
 
     final position = _controller!.value.position.inSeconds;
     final context = "Analyzing video at timestamp $position seconds. Please describe the action, check for fouls, and provide commentary.";
+    final query = _chatController.text.isNotEmpty ? _chatController.text : null;
+    if (query != null) {
+      _chatController.clear();
+    }
 
     try {
       final response = await http.post(
-        Uri.parse('http://127.0.0.1:8000/analyze'),
+        Uri.parse('https://football-ai-backend-480523353991.us-central1.run.app/analyze'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'video_description': context}),
+        body: jsonEncode({
+          'video_description': context,
+          if (query != null) 'custom_query': query,
+        }),
       );
 
       if (response.statusCode == 200) {
@@ -90,12 +123,27 @@ class _FootballDashboardState extends State<FootballDashboard> {
           _mediaText = data['video_generation_prompt'] ?? "No media prompt";
         });
         
-        // Play TTS Audio if available
-        final audioB64 = data['audio_base64'] as String?;
-        if (audioB64 != null && audioB64.isNotEmpty) {
+        // Play TTS Audio client-side with dynamic energy
+        if (_commentaryText.isNotEmpty) {
           try {
-            Uint8List audioBytes = base64Decode(audioB64);
-            await _audioPlayer.play(BytesSource(audioBytes));
+            await _flutterTts.setLanguage("en-GB"); // British accent for classic football commentary feel
+            
+            // Dynamically adjust energy based on the match excitement level
+            if (_excitementLevel > 8) {
+              await _flutterTts.setPitch(1.3);
+              await _flutterTts.setSpeechRate(1.1); // Fast and high pitched
+              await _flutterTts.setVolume(1.0);
+            } else if (_excitementLevel > 5) {
+              await _flutterTts.setPitch(1.1);
+              await _flutterTts.setSpeechRate(1.0); // Normal pace
+              await _flutterTts.setVolume(0.8);
+            } else {
+              await _flutterTts.setPitch(1.0);
+              await _flutterTts.setSpeechRate(0.9); // Slower, calmer
+              await _flutterTts.setVolume(0.7);
+            }
+            
+            await _flutterTts.speak(_commentaryText);
           } catch (e) {
             print("Failed to play audio: $e");
           }
@@ -107,7 +155,7 @@ class _FootballDashboardState extends State<FootballDashboard> {
       }
     } catch (e) {
       setState(() {
-         _visionText = "Connection error. Make sure backend is running on port 8000.";
+         _visionText = "Connection error. Failed to reach the Cloud Run backend.";
       });
     } finally {
       setState(() {
@@ -119,7 +167,9 @@ class _FootballDashboardState extends State<FootballDashboard> {
   @override
   void dispose() {
     _controller?.dispose();
-    _audioPlayer.dispose();
+    _flutterTts.stop();
+    _chatController.dispose();
+    _pollingTimer?.cancel();
     super.dispose();
   }
 
@@ -149,9 +199,83 @@ class _FootballDashboardState extends State<FootballDashboard> {
                     child: _controller != null && _controller!.value.isInitialized
                         ? AspectRatio(
                             aspectRatio: _controller!.value.aspectRatio,
-                            child: VideoPlayer(_controller!),
+                            child: Stack(
+                              children: [
+                                VideoPlayer(_controller!),
+                                // Mock Visual Overlay (Scoreboard)
+                                if (_visionText != "Waiting for analysis...")
+                                  Positioned(
+                                    top: 16,
+                                    left: 16,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                      decoration: BoxDecoration(color: Colors.black87, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.teal)),
+                                      child: const Text("FCB 2 - 1 RMA  |  89:42", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                                    ),
+                                  ),
+                                // Mock Bounding Box
+                                if (_visionText != "Waiting for analysis...")
+                                  Positioned(
+                                    top: 100,
+                                    left: 150,
+                                    width: 120,
+                                    height: 200,
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        border: Border.all(color: Colors.redAccent, width: 3),
+                                        borderRadius: BorderRadius.circular(8)
+                                      ),
+                                      child: const Align(
+                                        alignment: Alignment.topCenter,
+                                        child: Text("Key Player", style: TextStyle(color: Colors.redAccent, backgroundColor: Colors.black54, fontWeight: FontWeight.bold)),
+                                      ),
+                                    ),
+                                  ),
+                                // Dynamic Breaking Insight Banner
+                                if (_visionText != "Waiting for analysis..." && (_excitementLevel > 7 || _commentaryText.contains("answer to your question")))
+                                  Positioned(
+                                    bottom: 30,
+                                    left: 20,
+                                    right: 20,
+                                    child: Container(
+                                      padding: const EdgeInsets.all(16),
+                                      decoration: BoxDecoration(
+                                        color: Colors.redAccent.withOpacity(0.9),
+                                        borderRadius: BorderRadius.circular(12),
+                                        boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 10)]
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Text("🔥 BREAKING INSIGHT", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+                                          const SizedBox(height: 8),
+                                          Text(_commentaryText, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600)),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
                           )
-                        : const Text('Please upload a video to start', style: TextStyle(color: Colors.grey)),
+                        : Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(Icons.video_library, size: 64, color: Colors.grey),
+                              const SizedBox(height: 16),
+                              const Text('Please upload a video to start', style: TextStyle(color: Colors.grey, fontSize: 18)),
+                              const SizedBox(height: 24),
+                              ElevatedButton.icon(
+                                onPressed: _pickVideo,
+                                icon: const Icon(Icons.upload_file),
+                                label: const Text("Select Video File"),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.teal,
+                                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                                ),
+                              ),
+                            ],
+                          ),
                   ),
                 ),
                 Container(
@@ -166,8 +290,10 @@ class _FootballDashboardState extends State<FootballDashboard> {
                           setState(() {
                             if (_isPlaying) {
                               _controller?.pause();
+                              _stopPolling();
                             } else {
                               _controller?.play();
+                              _startPolling();
                             }
                             _isPlaying = !_isPlaying;
                           });
@@ -182,6 +308,35 @@ class _FootballDashboardState extends State<FootballDashboard> {
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.teal,
                           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        ),
+                        onPressed: _isAnalyzing ? null : _analyzeCurrentPlay,
+                      )
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.all(16.0),
+                  color: Colors.black87,
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _chatController,
+                          decoration: const InputDecoration(
+                            hintText: 'Ask the Agent a custom question (e.g., "Was that a foul?")',
+                            border: OutlineInputBorder(),
+                            filled: true,
+                            fillColor: Colors.black54,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      ElevatedButton.icon(
+                        icon: const Icon(Icons.send),
+                        label: const Text("Ask Agent"),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.teal,
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
                         ),
                         onPressed: _isAnalyzing ? null : _analyzeCurrentPlay,
                       )
