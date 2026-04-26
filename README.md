@@ -61,5 +61,8 @@ flutter run -d windows
 ### Video Demo
 
 Here is a video demo of the application:
-[![Construction AI Demo](https://img.youtube.com/vi/MibL8O5Ff_4/0.jpg)](https://www.youtube.com/watch?v=Rrli5nphch4)
-https://youtu.be/Rrli5nphch4
+
+[![Football AI Demo](https://img.youtube.com/vi/Rrli5nphch4/0.jpg)](https://www.youtube.com/watch?v=Rrli5nphch4)
+
+[![Football AI Demo-2](https://img.youtube.com/vi/_Tsu66yyfNc/0.jpg)](https://www.youtube.com/watch?v=_Tsu66yyfNc)
+
